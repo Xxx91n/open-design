@@ -70,6 +70,8 @@ apps/desktop/vendor/dom-to-pptx/dom-to-pptx.bundle.js
 
 # Commander task scratchpad; keep local task notes out of git by default.
 .task/
+# Agent scratch: decision ledgers, handoffs, temp scripts. Never PR content.
+.scratch/
 task.md
 specs/change/active
 .ralph/
