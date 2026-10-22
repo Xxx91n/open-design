@@ -60,6 +60,7 @@ import {
   isAzureOpenAIHostname,
   isUnsupportedMaxTokensError,
 } from './integrations/openai-chat-token-params.js';
+import { normalizeOpenAICompletion } from './integrations/openaiCompletionShape.js';
 import { aihubmixHeaders } from './integrations/aihubmix.js';
 import type { AgentCliEnvPrefs } from './app-config.js';
 import type { RuntimeAgentDef } from './runtimes/types.js';
@@ -948,7 +949,10 @@ function inspectProviderCompletion(
   if (!obj) return { valid: false };
 
   if (protocol === 'openai' || protocol === 'azure' || protocol === 'senseaudio' || protocol === 'aihubmix') {
-    const responseModel = typeof obj.model === 'string' ? obj.model : '';
+    // Read the completion object, not the envelope it may arrive in. This is a
+    // shape choice only — every check below still runs on whatever comes back.
+    const shape = normalizeOpenAICompletion(obj) as Record<string, unknown>;
+    const responseModel = typeof shape.model === 'string' ? shape.model : '';
     if (
       // AIHubMix is omitted from the strict response-model check (like Azure):
       // its gateway routes by model name and may echo a normalized id.
@@ -964,7 +968,7 @@ function inspectProviderCompletion(
         detail: `Provider responded with model "${responseModel}" instead of requested "${requestedModel}".`,
       };
     }
-    const choices = obj.choices;
+    const choices = shape.choices;
     if (!Array.isArray(choices) || choices.length === 0) return { valid: false };
     const first = choices[0] as { finish_reason?: unknown } | undefined;
     const finishReason =
@@ -1093,7 +1097,47 @@ function extractOpenAiModelIds(data: unknown): string[] {
     .filter((id): id is string => typeof id === 'string' && id.length > 0);
 }
 
-function extractProviderErrorDetail(data: unknown, rawText: string): string {
+/**
+ * Describe why a 2xx response could not be read as a completion, without
+ * echoing the upstream body into the dialog.
+ *
+ * The upstream body carries provider metadata, cost figures, and generation
+ * ids that mean nothing to the person reading the error; the daemon log keeps
+ * the full body (truncated and redacted) for support. What the user needs is
+ * the shape — which keys arrived, and which known envelope was detected.
+ */
+function describeUnrecognizedCompletionShape(data: unknown): string {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return 'Provider returned a 2xx response whose body was not a JSON object.';
+  }
+  const obj = data as Record<string, unknown>;
+  const keys = Object.keys(obj);
+  const keyList = keys.length ? keys.slice(0, 8).join(', ') : 'none';
+
+  const nested = obj.data;
+  const nestedChoices =
+    nested && typeof nested === 'object' && !Array.isArray(nested)
+      ? (nested as { choices?: unknown }).choices
+      : undefined;
+
+  if (Array.isArray(nestedChoices)) {
+    if (nestedChoices.length === 0) {
+      return `Provider returned a 200 whose wrapped completion carried no choices. Top-level keys: ${keyList}.`;
+    }
+    const nestedObject = (nested as { object?: unknown }).object;
+    if (typeof nestedObject === 'string' && nestedObject !== 'chat.completion') {
+      return `Provider returned a 200 with "data.choices" but "data.object" was "${nestedObject}". Top-level keys: ${keyList}.`;
+    }
+    if (obj.success === false) {
+      return `Provider returned a 200 reporting "success: false" while carrying a "data.choices" envelope. Top-level keys: ${keyList}.`;
+    }
+    return `Provider returned a 200 but no top-level "choices"; found "data.choices" instead. Top-level keys: ${keyList}.`;
+  }
+
+  return `Provider returned a 200 but no top-level "choices". Top-level keys: ${keyList}.`;
+}
+
+function extractProviderErrorDetail(data: unknown): string {
   const obj = data && typeof data === 'object' ? data : null;
   const error = obj ? (obj as { error?: unknown }).error : null;
   if (typeof error === 'string') return error;
@@ -1103,7 +1147,7 @@ function extractProviderErrorDetail(data: unknown, rawText: string): string {
   }
   const message = obj ? (obj as { message?: unknown }).message : null;
   if (typeof message === 'string' && message.trim()) return message;
-  return rawText.trim().slice(0, 240);
+  return describeUnrecognizedCompletionShape(data);
 }
 
 /**
@@ -1567,7 +1611,8 @@ function buildProviderCall(input: ProviderTestRequest): ProviderCallShape {
 // `delta.content`). We need the non-streaming `message.content` shape
 // here. Kept module-local so the chat path doesn't change.
 function extractOpenAIMessageText(data: unknown): string {
-  const choices = (data as { choices?: unknown }).choices;
+  const completion = normalizeOpenAICompletion(data) as { choices?: unknown };
+  const choices = completion.choices;
   if (!Array.isArray(choices) || choices.length === 0) return '';
   const first = choices[0] as
     | { message?: { content?: unknown }; text?: unknown }
@@ -1782,7 +1827,7 @@ export async function testProviderConnection(
         };
       }
       if (!rawSample && !completion.valid) {
-        const providerError = extractProviderErrorDetail(data, rawText);
+        const providerError = extractProviderErrorDetail(data);
         const detail = redactSecrets(
           providerError || smokeFailureDetail(rawSample),
           [input.apiKey],
@@ -1792,6 +1837,12 @@ export async function testProviderConnection(
           : isLikelyModelErrorText(providerError)
             ? 'not_found_model'
             : 'unknown';
+        // The dialog shows the shape summary above; the full body lands here so
+        // support can still see what actually arrived. Bounded and redacted —
+        // an unredacted dump would put the API key on disk.
+        console.warn(
+          `[test:provider] ${input.protocol} ${validated.parsed.hostname} model=${input.model} body(200)=${redactSecrets(rawText.slice(0, 2048), [input.apiKey])}`,
+        );
         console.warn(
           `[test:provider] ${input.protocol} ${validated.parsed.hostname} model=${input.model} → ${response.status} in ${latencyMs}ms (unexpected_sample)${detail ? ` ${detail}` : ''}`,
         );
