@@ -1137,7 +1137,17 @@ function describeUnrecognizedCompletionShape(data: unknown): string {
   return `Provider returned a 200 but no top-level "choices". Top-level keys: ${keyList}.`;
 }
 
-function extractProviderErrorDetail(data: unknown): string {
+/**
+ * Pull a human-readable message out of an upstream body, falling back to
+ * whatever the caller considers the best available evidence.
+ *
+ * The fallback is a parameter rather than a fixed slice of the raw text because
+ * the two callers need different things: a non-2xx body *is* the error payload,
+ * so its raw text is the right fallback; a 2xx body is a completion that failed
+ * shape validation, where echoing it verbatim would dump provider metadata into
+ * the dialog — that caller passes `describeUnrecognizedCompletionShape` instead.
+ */
+function extractProviderErrorDetail(data: unknown, fallback: string): string {
   const obj = data && typeof data === 'object' ? data : null;
   const error = obj ? (obj as { error?: unknown }).error : null;
   if (typeof error === 'string') return error;
@@ -1147,7 +1157,7 @@ function extractProviderErrorDetail(data: unknown): string {
   }
   const message = obj ? (obj as { message?: unknown }).message : null;
   if (typeof message === 'string' && message.trim()) return message;
-  return describeUnrecognizedCompletionShape(data);
+  return fallback;
 }
 
 /**
@@ -1827,7 +1837,10 @@ export async function testProviderConnection(
         };
       }
       if (!rawSample && !completion.valid) {
-        const providerError = extractProviderErrorDetail(data);
+        const providerError = extractProviderErrorDetail(
+          data,
+          describeUnrecognizedCompletionShape(data),
+        );
         const detail = redactSecrets(
           providerError || smokeFailureDetail(rawSample),
           [input.apiKey],
