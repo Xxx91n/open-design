@@ -1098,49 +1098,52 @@ function extractOpenAiModelIds(data: unknown): string[] {
 }
 
 /**
- * Describe why a 2xx response could not be read as a completion, without
- * echoing the upstream body into the dialog.
+ * Describe why a 2xx response could not be read as a completion.
  *
- * The upstream body carries provider metadata, cost figures, and generation
- * ids that mean nothing to the person reading the error; the daemon log keeps
- * the full body (truncated and redacted) for support. What the user needs is
- * the shape — which keys arrived, and which known envelope was detected.
+ * Every fragment is a whitelisted structural fact — key names, array lengths,
+ * a type field, a boolean flag. No upstream *values* are ever included, and
+ * nothing here is written to disk: the dialog is the only destination. Earlier
+ * drafts of this path also persisted the raw body to the daemon log; that was
+ * dropped because `redactSecrets` is a blacklist over header-shaped secrets and
+ * a body echoing `{"api_key": "..."}` would have survived it.
+ *
+ * The fragments are emitted unconditionally so this stays a stable contract:
+ * a field is reported whether or not it explains the failure, which is what
+ * makes the output safe to reason about when a new envelope shape appears.
  */
 function describeUnrecognizedCompletionShape(data: unknown): string {
   if (!data || typeof data !== 'object' || Array.isArray(data)) {
     return 'Provider returned a 2xx response whose body was not a JSON object.';
   }
   const obj = data as Record<string, unknown>;
-  const keys = Object.keys(obj);
-  const keyList = keys.length ? keys.slice(0, 8).join(', ') : 'none';
+  const parts: string[] = [];
 
-  // A standard completion that arrived with no choices. Say so plainly — the
-  // generic "no top-level choices" wording below would be wrong here.
-  if (Array.isArray(obj.choices)) {
-    return `Provider returned a 200 whose completion carried no choices. Top-level keys: ${keyList}.`;
-  }
+  const keys = Object.keys(obj);
+  parts.push(`top-level keys: ${keys.length ? keys.slice(0, 8).join(', ') : 'none'}`);
+
+  const countLabel = (n: number) => `${n} ${n === 1 ? 'entry' : 'entries'}`;
+  parts.push(
+    Array.isArray(obj.choices)
+      ? `top-level choices: ${countLabel(obj.choices.length)}`
+      : 'top-level choices: absent',
+  );
 
   const nested = obj.data;
-  const nestedChoices =
-    nested && typeof nested === 'object' && !Array.isArray(nested)
-      ? (nested as { choices?: unknown }).choices
-      : undefined;
-
-  if (Array.isArray(nestedChoices)) {
-    if (nestedChoices.length === 0) {
-      return `Provider returned a 200 whose wrapped completion carried no choices. Top-level keys: ${keyList}.`;
-    }
-    const nestedObject = (nested as { object?: unknown }).object;
-    if (typeof nestedObject === 'string' && nestedObject !== 'chat.completion') {
-      return `Provider returned a 200 with "data.choices" but "data.object" was "${nestedObject}". Top-level keys: ${keyList}.`;
-    }
-    if (obj.success === false) {
-      return `Provider returned a 200 reporting "success: false" while carrying a "data.choices" envelope. Top-level keys: ${keyList}.`;
-    }
-    return `Provider returned a 200 but no top-level "choices"; found "data.choices" instead. Top-level keys: ${keyList}.`;
+  if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+    const inner = nested as Record<string, unknown>;
+    parts.push(
+      Array.isArray(inner.choices)
+        ? `data.choices: ${countLabel(inner.choices.length)}`
+        : 'data.choices: absent',
+    );
+    if (typeof inner.object === 'string') parts.push(`data.object: ${inner.object}`);
+  } else {
+    parts.push('data: absent');
   }
 
-  return `Provider returned a 200 but no top-level "choices". Top-level keys: ${keyList}.`;
+  if (obj.success === false) parts.push('success: false');
+
+  return `Provider returned a 200 without a readable completion (${parts.join('; ')}).`;
 }
 
 /**

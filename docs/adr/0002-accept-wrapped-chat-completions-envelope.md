@@ -26,7 +26,7 @@ OpenDesign's connection test reads top-level `choices`, so a 200 response that d
 
 4. **Unwrapping is logged.** Each time the shim fires, emit a line naming the provider. This is how we will know when it can be removed.
 
-5. **Shape-mismatch diagnostics stay in `detail`, and the body is not persisted.** No new `ConnectionTestKind`. The dialog shows a structural summary — which top-level keys arrived, whether `data.choices` was found and how many entries it held, and `data.object` when present. The raw body is deliberately **not** written to the daemon log: `redactSecrets` strips bearer/header forms and the submitted key, but a JSON field such as `"api_key"` passes through it untouched, and daemon logs are collected into diagnostics. A whitelist summary keeps the diagnostic value without that exposure.
+5. **Shape-mismatch diagnostics stay in `detail`, and the body is not persisted.** No new `ConnectionTestKind`. The dialog shows one structural summary, emitted unconditionally so the contract does not depend on which branch matched: top-level key names (first eight), the top-level `choices` count or `absent`, the `data.choices` count or `absent`, `data.object` when it is a string, `success: false` when set, and `data: absent` when there is no `data` object. Every fragment is a name, a count, or a type — never an upstream value. The raw body is deliberately **not** written to the daemon log: `redactSecrets` strips bearer/header forms and the submitted key, but a JSON field such as `"api_key"` passes through it untouched, and daemon logs are collected into diagnostics.
 
 ## Alternatives considered
 
@@ -41,6 +41,8 @@ OpenDesign's connection test reads top-level `choices`, so a 200 response that d
 Non-streaming OpenAI consumers now accept one additional, explicitly enumerated response shape. Every other shape still fails, and failure diagnostics get more actionable rather than less.
 
 Diagnostics moved *away* from raw-body echoing, not toward it. An earlier draft of this decision persisted up to 2 KB of the untrusted body in the daemon log on the theory that it was the only surviving evidence; review pointed out that `redactSecrets` is a blacklist over header-shaped secrets, so a provider that echoes `{"api_key": "..."}` would have been written to disk. The summary carries the same shape information and none of the values.
+
+That makes the summary the only diagnostic. If a future failure genuinely needs body values, the answer is a deliberate capture mechanism the user opts into — not a log line quietly reinstated because "support might need it".
 
 The shim is a compatibility layer with no upstream fix shipped. It should be removed once Cline offers a standard response — they have discussed an `X-Response-Format: openai` request header — and the unwrap log line is the signal that it is still in use.
 
