@@ -1114,6 +1114,12 @@ function describeUnrecognizedCompletionShape(data: unknown): string {
   const keys = Object.keys(obj);
   const keyList = keys.length ? keys.slice(0, 8).join(', ') : 'none';
 
+  // A standard completion that arrived with no choices. Say so plainly — the
+  // generic "no top-level choices" wording below would be wrong here.
+  if (Array.isArray(obj.choices)) {
+    return `Provider returned a 200 whose completion carried no choices. Top-level keys: ${keyList}.`;
+  }
+
   const nested = obj.data;
   const nestedChoices =
     nested && typeof nested === 'object' && !Array.isArray(nested)
@@ -1850,12 +1856,6 @@ export async function testProviderConnection(
           : isLikelyModelErrorText(providerError)
             ? 'not_found_model'
             : 'unknown';
-        // The dialog shows the shape summary above; the full body lands here so
-        // support can still see what actually arrived. Bounded and redacted —
-        // an unredacted dump would put the API key on disk.
-        console.warn(
-          `[test:provider] ${input.protocol} ${validated.parsed.hostname} model=${input.model} body(200)=${redactSecrets(rawText.slice(0, 2048), [input.apiKey])}`,
-        );
         console.warn(
           `[test:provider] ${input.protocol} ${validated.parsed.hostname} model=${input.model} → ${response.status} in ${latencyMs}ms (unexpected_sample)${detail ? ` ${detail}` : ''}`,
         );
