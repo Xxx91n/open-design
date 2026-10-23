@@ -26,7 +26,24 @@ OpenDesign's connection test reads top-level `choices`, so a 200 response that d
 
 4. **Unwrapping is logged.** Each time the shim fires, emit a line naming the provider. This is how we will know when it can be removed.
 
-5. **Shape-mismatch diagnostics stay in `detail`, and the body is not persisted.** No new `ConnectionTestKind`. The dialog shows one structural summary, emitted unconditionally so the contract does not depend on which branch matched: top-level key names (first eight), the top-level `choices` count or `absent`, the `data.choices` count or `absent`, `data.object` when it is a string, `success: false` when set, and `data: absent` when there is no `data` object. Every fragment is a name, a count, or a type — never an upstream value. The raw body is deliberately **not** written to the daemon log: `redactSecrets` strips bearer/header forms and the submitted key, but a JSON field such as `"api_key"` passes through it untouched, and daemon logs are collected into diagnostics.
+5. **Shape-mismatch diagnostics stay in `detail`, and the body is not persisted.** No new `ConnectionTestKind`. The dialog shows one structural summary, emitted unconditionally: allowlisted top-level key names, a count of any other keys, the top-level `choices` count or `absent`, the `data.choices` count or `absent`, `data.object` classified against an enum, `success: false` when set, and `data: absent` when there is no `data` object. The raw body is deliberately **not** written to the daemon log: `redactSecrets` strips bearer/header forms and the submitted key, but a JSON field such as `"api_key"` passes through it untouched, and daemon logs are collected into diagnostics.
+
+## Diagnostic trust model
+
+`detail` is rendered in the dialog *and* written by the provider-test warning, and daemon logs are collected into diagnostics. So everything in it has to satisfy one rule: **no provider-controlled string is echoed, in any position — including property names.**
+
+Allowed fragments:
+
+- our own literals (sentence frames, `absent`, `other`);
+- names from a fixed allowlist — `data`, `choices`, `success`, `error`, `message`, `object`, `model`, `usage`, `id`, `created`, `output`, `output_text`, `candidates`, `content`, `finish_reason`, `system_fingerprint`, `index`;
+- values from a fixed enum — `chat.completion`, `chat.completion.chunk`, `text_completion`, `embedding`;
+- counts and booleans.
+
+Not allowed: raw bodies, property names outside the allowlist, `data.object` outside the enum, model ids read from the response, model output text. `redactSecrets` is not a substitute for any of this — it is a blacklist over header-shaped secrets and does not cover a JSON field such as `api_key`.
+
+This rule was arrived at the hard way. Three review rounds each closed one instance of the same class, because the working assumption was "structure is safe, values are dangerous". A property name is a value. The invariant test `diagnostics never echo provider-supplied strings` in `apps/daemon/tests/connection-test.test.ts` pins the rule rather than the instances.
+
+Pre-existing sites that still echo provider strings and are deliberately **not** changed here (tracked as a follow-up): the non-2xx body slice in `classifyProviderHttpFailure`, `extractProviderErrorDetail`'s `error.message`, the `not_found_model` model echo, and `smokeFailureDetail`'s reply sample.
 
 ## Alternatives considered
 

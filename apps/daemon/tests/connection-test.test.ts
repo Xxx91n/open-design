@@ -2686,6 +2686,46 @@ describe('POST /api/test/connection provider mode', () => {
         expect(body.ok).toBe(false);
       });
     });
+
+    // Diagnostic hygiene — docs/adr/0002 §Diagnostic trust model.
+    //
+    // Property names and `data.object` are provider-controlled strings, not
+    // structure. They must not reach `detail` (rendered in the dialog) or the
+    // daemon log (collected into diagnostics), even when they carry something
+    // secret-shaped. This is the regression for the class, not for one path.
+    describe('diagnostics never echo provider-supplied strings', () => {
+      it('collapses an opaque property name and data.object to counts and classifications', async () => {
+        const sentinel = 'sk-live-SENTINEL-DO-NOT-LEAK';
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          vi.stubGlobal(
+            'fetch',
+            passThroughOrUpstream(() =>
+              jsonResponse({
+                success: true,
+                data: { object: sentinel, choices: [] },
+                [sentinel]: 'value',
+              }),
+            ),
+          );
+
+          const body = await postProviderTest({});
+
+          expect(body.ok).toBe(false);
+          expect(body.detail).not.toContain(sentinel);
+          const logged = warn.mock.calls
+            .map((args) => args.map((arg) => String(arg)).join(' '))
+            .join('\n');
+          expect(logged).not.toContain(sentinel);
+
+          // The shape is still reported — as classification, not raw text.
+          expect(body.detail).toContain('data.object: other');
+          expect(body.detail).toContain('other keys: 1');
+        } finally {
+          warn.mockRestore();
+        }
+      });
+    });
   });
 });
 

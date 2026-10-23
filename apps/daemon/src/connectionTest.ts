@@ -1097,19 +1097,51 @@ function extractOpenAiModelIds(data: unknown): string[] {
     .filter((id): id is string => typeof id === 'string' && id.length > 0);
 }
 
+// Diagnostic vocabulary. Only these names are ever echoed; anything else the
+// provider sends is counted, never printed.
+//
+// The rule this encodes: a property NAME is a provider-controlled string just
+// like a value is. Calling the output a "whitelist" because it looks structural
+// is exactly the mistake that let a credential-shaped key name reach the
+// dialog and the daemon log.
+const KNOWN_TOP_LEVEL_KEYS = new Set([
+  'data',
+  'choices',
+  'success',
+  'error',
+  'message',
+  'object',
+  'model',
+  'usage',
+  'id',
+  'created',
+  'output',
+  'output_text',
+  'candidates',
+  'content',
+  'finish_reason',
+  'system_fingerprint',
+  'index',
+]);
+
+// Enumerated completion-object values. `data.object` is echoed only when it is
+// one of ours; anything else collapses to `other`.
+const KNOWN_COMPLETION_OBJECTS = new Set([
+  'chat.completion',
+  'chat.completion.chunk',
+  'text_completion',
+  'embedding',
+]);
+
 /**
  * Describe why a 2xx response could not be read as a completion.
  *
- * Every fragment is a whitelisted structural fact — key names, array lengths,
- * a type field, a boolean flag. No upstream *values* are ever included, and
- * nothing here is written to disk: the dialog is the only destination. Earlier
- * drafts of this path also persisted the raw body to the daemon log; that was
- * dropped because `redactSecrets` is a blacklist over header-shaped secrets and
- * a body echoing `{"api_key": "..."}` would have survived it.
- *
- * The fragments are emitted unconditionally so this stays a stable contract:
- * a field is reported whether or not it explains the failure, which is what
- * makes the output safe to reason about when a new envelope shape appears.
+ * Every fragment is either one of our own literals, a name from the allowlist
+ * above, an enumerated value, or a count. No provider-supplied string reaches
+ * this output, because this string becomes `detail` — which is shown in the
+ * dialog AND written by the provider-test warning — and daemon logs are
+ * collected into diagnostics. Earlier drafts echoed raw bodies, then property
+ * names and `data.object`; both were provider-controlled and both were wrong.
  */
 function describeUnrecognizedCompletionShape(data: unknown): string {
   if (!data || typeof data !== 'object' || Array.isArray(data)) {
@@ -1119,7 +1151,10 @@ function describeUnrecognizedCompletionShape(data: unknown): string {
   const parts: string[] = [];
 
   const keys = Object.keys(obj);
-  parts.push(`top-level keys: ${keys.length ? keys.slice(0, 8).join(', ') : 'none'}`);
+  const knownKeys = keys.filter((key) => KNOWN_TOP_LEVEL_KEYS.has(key)).sort();
+  parts.push(`known keys: ${knownKeys.length ? knownKeys.join(', ') : 'none'}`);
+  const otherKeyCount = keys.length - knownKeys.length;
+  if (otherKeyCount > 0) parts.push(`other keys: ${otherKeyCount}`);
 
   const countLabel = (n: number) => `${n} ${n === 1 ? 'entry' : 'entries'}`;
   parts.push(
@@ -1136,7 +1171,13 @@ function describeUnrecognizedCompletionShape(data: unknown): string {
         ? `data.choices: ${countLabel(inner.choices.length)}`
         : 'data.choices: absent',
     );
-    if (typeof inner.object === 'string') parts.push(`data.object: ${inner.object}`);
+    if (typeof inner.object === 'string') {
+      parts.push(
+        `data.object: ${
+          KNOWN_COMPLETION_OBJECTS.has(inner.object) ? inner.object : 'other'
+        }`,
+      );
+    }
   } else {
     parts.push('data: absent');
   }

@@ -65,11 +65,12 @@ export function normalizeOpenAICompletion(payload: unknown): unknown {
   // Removal signal: when Cline ships a standard response (they have discussed
   // an `X-Response-Format: openai` header) this line stops appearing in daemon
   // logs, which is when the shim can go.
-  console.log(
-    `[openai-envelope] unwrapped a data-wrapped chat completion (model=${
-      typeof nested.model === 'string' ? nested.model : 'unknown'
-    })`,
-  );
+  //
+  // Deliberately carries no response data. `data.model` is a provider-supplied
+  // string, and daemon logs are collected into diagnostics; the adjacent
+  // `[test:provider]` line already names the host and the requested model,
+  // both of which come from user configuration rather than the response.
+  console.log('[openai-envelope] unwrapped a data-wrapped chat completion');
 
   return nested;
 }
